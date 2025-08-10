@@ -3,44 +3,47 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Store Reservation Map</title>
+    <title>Freedom THD Stores Map</title>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Maps JavaScript API -->
+    <script async defer src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBHcVkUgYLoJnNKpTecRUpAyMHU-T8HqFY&callback=initMap"></script>
     <style>
         body { margin: 0; font-family: system-ui, -apple-system, sans-serif; }
+        #map { height: 100%; width: 100%; }
     </style>
 </head>
 <body>
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useMemo } = React;
+        const { useState, useEffect, useMemo, useRef } = React;
 
         // Configuration - FULLY CONFIGURED
         const CONFIG = {
-            // Your Google Sheet ID (extracted from URL)
-            SHEET_ID: '1zWuRx7IugpObqQEyhXs4EdfcsWJZ7bvxpPmglVOTJgo',
+            // Your NEW Google Sheet ID (extracted from URL)
+            SHEET_ID: '1SzcwBIooLjgc8lVcXFyPM7UHc5eaav1y297VeRSOhlg',
             
-            // Your actual sheet tab name
-            SHEET_NAME: 'Store Roster',
+            // Your Freedom THD Stores sheet tab name
+            SHEET_NAME: 'Freedom THD Stores',
             
-            // Your Google API Key
+            // Your Google API Key (same as before)
             API_KEY: 'AIzaSyBHcVkUgYLoJnNKpTecRUpAyMHU-T8HqFY',
+            
+            // Google Maps API Key (same as above)
+            MAPS_API_KEY: 'AIzaSyBHcVkUgYLoJnNKpTecRUpAyMHU-T8HqFY',
             
             // Auto-refresh interval in minutes (set to 0 to disable)
             REFRESH_MINUTES: 5
         };
 
-        // Lucide React icons as simple SVG components
-        const MapPin = ({ className }) => (
-            <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-        );
+        // Global variables for Google Maps
+        let map = null;
+        let markers = [];
 
+        // Lucide React icons as simple SVG components
         const Filter = ({ className }) => (
             <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
@@ -78,38 +81,158 @@
             </svg>
         );
 
-        const StoreReservationMap = () => {
+        // Initialize Google Map
+        window.initMap = function() {
+            console.log('Google Maps API loaded');
+        };
+
+        const FreedomTHDStoresMap = () => {
             const [stores, setStores] = useState([]);
             const [loading, setLoading] = useState(true);
             const [error, setError] = useState('');
             const [lastUpdated, setLastUpdated] = useState(null);
             const [searchTerm, setSearchTerm] = useState('');
+            const [statusFilter, setStatusFilter] = useState('all');
             const [stateFilter, setStateFilter] = useState('all');
             const [selectedStore, setSelectedStore] = useState(null);
+            const mapRef = useRef(null);
+            const [mapLoaded, setMapLoaded] = useState(false);
 
-            // Check if configuration is complete
-            const isConfigured = CONFIG.SHEET_ID !== 'YOUR_GOOGLE_SHEET_ID_HERE' && 
-                               CONFIG.API_KEY !== 'YOUR_GOOGLE_API_KEY_HERE';
+            // Status configuration
+            const getStatusColor = (status) => {
+                switch (status.toLowerCase()) {
+                    case 'open': return '#10B981';    // Green
+                    case 'reserved': return '#F59E0B'; // Yellow/Orange
+                    case 'staffed': return '#EF4444';  // Red
+                    default: return '#6B7280';         // Gray
+                }
+            };
+
+            const getStatusBgColor = (status) => {
+                switch (status.toLowerCase()) {
+                    case 'open': return '#D1FAE5';     // Light green
+                    case 'reserved': return '#FEF3C7'; // Light yellow
+                    case 'staffed': return '#FEE2E2';  // Light red
+                    default: return '#F3F4F6';         // Light gray
+                }
+            };
+
+            const getStatusTextColor = (status) => {
+                switch (status.toLowerCase()) {
+                    case 'open': return '#065F46';     // Dark green
+                    case 'reserved': return '#92400E'; // Dark yellow
+                    case 'staffed': return '#991B1B';  // Dark red
+                    default: return '#374151';         // Dark gray
+                }
+            };
+
+            const initializeMap = () => {
+                if (!window.google || !mapRef.current) return;
+
+                // Create map centered on US
+                map = new window.google.maps.Map(mapRef.current, {
+                    zoom: 4,
+                    center: { lat: 39.8283, lng: -98.5795 }, // Center of US
+                    mapTypeId: 'roadmap',
+                    styles: [
+                        {
+                            featureType: 'poi',
+                            elementType: 'labels',
+                            stylers: [{ visibility: 'off' }]
+                        }
+                    ]
+                });
+
+                setMapLoaded(true);
+                console.log('Google Map initialized');
+            };
+
+            const addMarkersToMap = (storeData) => {
+                if (!map || !window.google) return;
+
+                // Clear existing markers
+                markers.forEach(marker => marker.setMap(null));
+                markers = [];
+
+                // Add new markers
+                storeData.forEach(store => {
+                    const marker = new window.google.maps.Marker({
+                        position: { lat: store.latitude, lng: store.longitude },
+                        map: map,
+                        title: store.storeName,
+                        icon: {
+                            path: window.google.maps.SymbolPath.CIRCLE,
+                            fillColor: getStatusColor(store.status),
+                            fillOpacity: 1,
+                            strokeColor: '#ffffff',
+                            strokeWeight: 2,
+                            scale: 8
+                        }
+                    });
+
+                    const statusDisplay = store.status.charAt(0).toUpperCase() + store.status.slice(1).toLowerCase();
+
+                    const infoWindow = new window.google.maps.InfoWindow({
+                        content: `
+                            <div style="padding: 8px; min-width: 200px;">
+                                <h3 style="margin: 0 0 8px 0; font-size: 16px; font-weight: bold;">${store.storeName}</h3>
+                                <p style="margin: 0 0 4px 0; color: #666;">${store.retailer}</p>
+                                <p style="margin: 0 0 4px 0; font-size: 14px;">${store.address}</p>
+                                <p style="margin: 0 0 8px 0; font-size: 14px;">${store.city}, ${store.state} ${store.zip}</p>
+                                <p style="margin: 0; text-align: center;">
+                                    <span style="background: ${getStatusBgColor(store.status)}; color: ${getStatusTextColor(store.status)}; padding: 4px 12px; border-radius: 12px; font-size: 14px; font-weight: 500;">${statusDisplay}</span>
+                                </p>
+                            </div>
+                        `
+                    });
+
+                    marker.addListener('click', () => {
+                        // Close any open info windows
+                        markers.forEach(m => m.infoWindow && m.infoWindow.close());
+                        
+                        // Open this info window
+                        infoWindow.open(map, marker);
+                        marker.infoWindow = infoWindow;
+                        
+                        // Also update the side panel
+                        setSelectedStore(store);
+                    });
+
+                    markers.push(marker);
+                });
+
+                // Fit map to show all markers
+                if (markers.length > 0) {
+                    const bounds = new window.google.maps.LatLngBounds();
+                    markers.forEach(marker => bounds.extend(marker.getPosition()));
+                    map.fitBounds(bounds);
+                    
+                    // Ensure we don't zoom in too much
+                    const listener = window.google.maps.event.addListener(map, 'idle', function() {
+                        if (map.getZoom() > 10) map.setZoom(10);
+                        window.google.maps.event.removeListener(listener);
+                    });
+                }
+            };
 
             const fetchFromGoogleSheets = async () => {
-                if (!isConfigured) {
-                    setError('Please configure your Google Sheet ID and API Key in the HTML file');
-                    setLoading(false);
-                    return;
-                }
-
                 try {
                     setLoading(true);
                     setError('');
 
-                    const url = `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SHEET_ID}/values/${CONFIG.SHEET_NAME}?key=${CONFIG.API_KEY}`;
+                    // Use the exact sheet name with asterisks
+                    const encodedSheetName = encodeURIComponent(CONFIG.SHEET_NAME);
+                    const url = `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SHEET_ID}/values/${encodedSheetName}?key=${CONFIG.API_KEY}`;
                     
                     console.log('Fetching from URL:', url);
+                    console.log('Sheet name being used:', CONFIG.SHEET_NAME);
                     
                     const response = await fetch(url);
                     
                     if (!response.ok) {
-                        throw new Error(`Google Sheets API error: ${response.status} ${response.statusText}`);
+                        const errorData = await response.json();
+                        console.error('API Error Response:', errorData);
+                        throw new Error(`Google Sheets API error: ${response.status} - ${errorData.error?.message || response.statusText}`);
                     }
                     
                     const data = await response.json();
@@ -123,6 +246,11 @@
                     setStores(parsedStores);
                     setLastUpdated(new Date());
                     console.log('Loaded stores:', parsedStores.length);
+
+                    // Add markers to map if map is loaded
+                    if (mapLoaded) {
+                        addMarkersToMap(parsedStores);
+                    }
                     
                 } catch (err) {
                     console.error('Error fetching data:', err);
@@ -135,41 +263,77 @@
             const parseGoogleSheetsData = (values) => {
                 const stores = [];
                 
+                console.log('Raw sheet data:', values);
+                console.log('Header row:', values[0]);
+                
                 // Skip header row (index 0) and process data rows
                 for (let i = 1; i < values.length; i++) {
                     const row = values[i];
                     
-                    // Ensure we have enough columns
-                    if (row.length >= 11) {
-                        const status = row[1]?.toString().trim().toLowerCase();
+                    console.log(`Row ${i}:`, row);
+                    
+                    // Ensure we have enough columns (need at least column Q = index 16)
+                    if (row.length >= 17) {
+                        const status = row[0]?.toString().trim().toLowerCase(); // Column A (index 0)
+                        console.log(`Row ${i} STATUS (Column A):`, `"${status}"`);
                         
-                        // Only include stores with "Open" status
-                        if (status === 'open') {
-                            const lat = parseFloat(row[9]);
-                            const lng = parseFloat(row[10]);
+                        // Include stores with Open, Reserved, or Staffed status
+                        if (['open', 'reserved', 'staffed'].includes(status)) {
+                            const lat = parseFloat(row[15]); // Column P (index 15) - Latitude
+                            const lng = parseFloat(row[16]); // Column Q (index 16) - Longitude
+                            
+                            console.log(`Row ${i} coordinates (P=${lat}, Q=${lng}):`, lat, lng);
                             
                             // Only add if we have valid coordinates
                             if (!isNaN(lat) && !isNaN(lng)) {
-                                stores.push({
-                                    reserveLink: row[0]?.toString().trim() || '',
-                                    status: row[1]?.toString().trim() || '',
-                                    retailer: row[2]?.toString().trim() || '',
-                                    storeNumber: row[3]?.toString().trim() || '',
-                                    storeName: row[4]?.toString().trim() || '',
-                                    address: row[5]?.toString().trim() || '',
-                                    city: row[6]?.toString().trim() || '',
-                                    state: row[7]?.toString().trim() || '',
-                                    zip: row[8]?.toString().trim() || '',
-                                    latitude: lat,
-                                    longitude: lng
-                                });
+                                const store = {
+                                    status: row[0]?.toString().trim() || '',          // Column A - STATUS
+                                    reserveLink: row[1]?.toString().trim() || '',     // Column B - RESERVE LINK  
+                                    retailer: row[2]?.toString().trim() || '',        // Column C - RETAILER
+                                    storeNumber: row[3]?.toString().trim() || '',     // Column D - STORE #
+                                    storeName: row[4]?.toString().trim() || '',       // Column E - STORE NAME
+                                    address: row[5]?.toString().trim() || '',         // Column F - ADDRESS
+                                    city: row[6]?.toString().trim() || '',            // Column G - CITY
+                                    state: row[7]?.toString().trim() || '',           // Column H - STATE
+                                    zip: row[8]?.toString().trim() || '',             // Column I - ZIP
+                                    latitude: lat,                                     // Column P - Latitude
+                                    longitude: lng                                     // Column Q - Longitude
+                                };
+                                console.log(`Adding store ${i}:`, store);
+                                stores.push(store);
+                            } else {
+                                console.log(`Row ${i} skipped - invalid coordinates P=${lat}, Q=${lng}`);
                             }
+                        } else {
+                            console.log(`Row ${i} skipped - status "${status}" not in allowed list`);
                         }
+                    } else {
+                        console.log(`Row ${i} skipped - insufficient columns (need 17, has ${row.length})`);
                     }
                 }
                 
+                console.log('Final parsed stores:', stores.length, stores);
                 return stores;
             };
+
+            // Initialize map when Google Maps API loads
+            useEffect(() => {
+                const checkGoogleMaps = () => {
+                    if (window.google && window.google.maps) {
+                        initializeMap();
+                    } else {
+                        setTimeout(checkGoogleMaps, 100);
+                    }
+                };
+                checkGoogleMaps();
+            }, []);
+
+            // Update markers when stores change
+            useEffect(() => {
+                if (mapLoaded && stores.length > 0) {
+                    addMarkersToMap(filteredStores);
+                }
+            }, [stores, filteredStores, mapLoaded]);
 
             // Initial load
             useEffect(() => {
@@ -178,7 +342,7 @@
 
             // Auto-refresh setup
             useEffect(() => {
-                if (CONFIG.REFRESH_MINUTES > 0 && isConfigured) {
+                if (CONFIG.REFRESH_MINUTES > 0) {
                     const interval = setInterval(() => {
                         console.log('Auto-refreshing data...');
                         fetchFromGoogleSheets();
@@ -193,41 +357,26 @@
                     const matchesSearch = store.storeName.toLowerCase().includes(searchTerm.toLowerCase()) ||
                                        store.city.toLowerCase().includes(searchTerm.toLowerCase()) ||
                                        store.retailer.toLowerCase().includes(searchTerm.toLowerCase());
+                    const matchesStatus = statusFilter === 'all' || store.status.toLowerCase() === statusFilter;
                     const matchesState = stateFilter === 'all' || store.state === stateFilter;
                     
-                    return matchesSearch && matchesState;
+                    return matchesSearch && matchesStatus && matchesState;
                 });
-            }, [stores, searchTerm, stateFilter]);
+            }, [stores, searchTerm, statusFilter, stateFilter]);
 
             const uniqueStates = [...new Set(stores.map(store => store.state))].sort();
-
-            if (!isConfigured) {
-                return (
-                    <div className="w-full h-screen bg-gray-50 flex items-center justify-center">
-                        <div className="max-w-md p-6 bg-white rounded-lg shadow-lg">
-                            <div className="flex items-center gap-3 mb-4">
-                                <AlertCircle className="w-6 h-6 text-yellow-500" />
-                                <h2 className="text-xl font-bold">Configuration Required</h2>
-                            </div>
-                            <p className="text-gray-600 mb-4">
-                                Please configure your Google Sheets integration by updating the CONFIG section in the HTML file:
-                            </p>
-                            <ul className="text-sm text-gray-700 space-y-1">
-                                <li>• SHEET_ID: Your Google Sheet ID</li>
-                                <li>• API_KEY: Your Google API Key</li>
-                                <li>• SHEET_NAME: Your sheet tab name</li>
-                            </ul>
-                        </div>
-                    </div>
-                );
-            }
+            const statusCounts = stores.reduce((acc, store) => {
+                const status = store.status.toLowerCase();
+                acc[status] = (acc[status] || 0) + 1;
+                return acc;
+            }, {});
 
             return (
                 <div className="w-full h-screen bg-gray-50 flex flex-col">
                     {/* Header */}
                     <div className="bg-white shadow-sm border-b px-6 py-4">
                         <div className="flex justify-between items-center mb-4">
-                            <h1 className="text-2xl font-bold text-gray-900">Store Reservation Map</h1>
+                            <h1 className="text-2xl font-bold text-gray-900">Freedom THD Stores Map</h1>
                             <button
                                 onClick={fetchFromGoogleSheets}
                                 disabled={loading}
@@ -253,6 +402,22 @@
                                 )}
                             </div>
                         )}
+
+                        {/* Status Summary */}
+                        <div className="mb-4 flex gap-4 text-sm">
+                            <div className="flex items-center gap-2">
+                                <div className="w-3 h-3 rounded-full bg-green-500"></div>
+                                <span>Open: {statusCounts.open || 0}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
+                                <span>Reserved: {statusCounts.reserved || 0}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <div className="w-3 h-3 rounded-full bg-red-500"></div>
+                                <span>Staffed: {statusCounts.staffed || 0}</span>
+                            </div>
+                        </div>
                         
                         {/* Filters */}
                         <div className="flex flex-wrap gap-4 items-center">
@@ -270,16 +435,27 @@
                             <div className="flex items-center gap-2">
                                 <Filter className="w-4 h-4 text-gray-500" />
                                 <select
-                                    value={stateFilter}
-                                    onChange={(e) => setStateFilter(e.target.value)}
+                                    value={statusFilter}
+                                    onChange={(e) => setStatusFilter(e.target.value)}
                                     className="px-3 py-1 border rounded-md text-sm"
                                 >
-                                    <option value="all">All States</option>
-                                    {uniqueStates.map(state => (
-                                        <option key={state} value={state}>{state}</option>
-                                    ))}
+                                    <option value="all">All Status</option>
+                                    <option value="open">Open</option>
+                                    <option value="reserved">Reserved</option>
+                                    <option value="staffed">Staffed</option>
                                 </select>
                             </div>
+
+                            <select
+                                value={stateFilter}
+                                onChange={(e) => setStateFilter(e.target.value)}
+                                className="px-3 py-1 border rounded-md text-sm"
+                            >
+                                <option value="all">All States</option>
+                                {uniqueStates.map(state => (
+                                    <option key={state} value={state}>{state}</option>
+                                ))}
+                            </select>
                             
                             <div className="text-sm text-gray-600">
                                 Showing {filteredStores.length} of {stores.length} stores
@@ -288,8 +464,10 @@
                     </div>
 
                     <div className="flex-1 flex">
-                        {/* Map Area */}
-                        <div className="flex-1 relative bg-gray-100">
+                        {/* Google Map */}
+                        <div className="flex-1 relative">
+                            <div ref={mapRef} id="map" className="w-full h-full"></div>
+                            
                             {loading && (
                                 <div className="absolute inset-0 bg-white bg-opacity-75 flex items-center justify-center z-10">
                                     <div className="flex items-center gap-3">
@@ -298,101 +476,6 @@
                                     </div>
                                 </div>
                             )}
-
-                            <div className="absolute inset-0">
-                                {/* Real US Map Background */}
-                                <div className="relative w-full h-full overflow-hidden">
-                                    {/* US Map SVG Background */}
-                                    <svg 
-                                        viewBox="0 0 1000 600" 
-                                        className="absolute inset-0 w-full h-full object-cover"
-                                        style={{ filter: 'brightness(0.95)' }}
-                                    >
-                                        {/* Simplified US Map Path */}
-                                        <path 
-                                            d="M 158 206 L 157 227 L 157 234 L 151 244 L 144 250 L 141 258 L 144 264 L 151 267 L 158 264 L 164 258 L 170 250 L 176 244 L 182 250 L 188 258 L 194 264 L 200 267 L 206 264 L 212 258 L 218 250 L 224 244 L 230 250 L 236 258 L 242 264 L 248 267 L 254 264 L 260 258 L 266 250 L 272 244 L 278 250 L 284 258 L 290 264 L 296 267 L 302 264 L 308 258 L 314 250 L 320 244 L 326 250 L 332 258 L 338 264 L 344 267 L 350 264 L 356 258 L 362 250 L 368 244 L 374 250 L 380 258 L 386 264 L 392 267 L 398 264 L 404 258 L 410 250 L 416 244 L 422 250 L 428 258 L 434 264 L 440 267 L 446 264 L 452 258 L 458 250 L 464 244 L 470 250 L 476 258 L 482 264 L 488 267 L 494 264 L 500 258 L 506 250 L 512 244 L 518 250 L 524 258 L 530 264 L 536 267 L 542 264 L 548 258 L 554 250 L 560 244 L 566 250 L 572 258 L 578 264 L 584 267 L 590 264 L 596 258 L 602 250 L 608 244 L 614 250 L 620 258 L 626 264 L 632 267 L 638 264 L 644 258 L 650 250 L 656 244 L 662 250 L 668 258 L 674 264 L 680 267 L 686 264 L 692 258 L 698 250 L 704 244 L 710 250 L 716 258 L 722 264 L 728 267 L 734 264 L 740 258 L 746 250 L 752 244 L 758 250 L 764 258 L 770 264 L 776 267 L 782 264 L 788 258 L 794 250 L 800 244 L 800 350 L 200 350 Z"
-                                            fill="#e2e8f0" 
-                                            stroke="#cbd5e1" 
-                                            strokeWidth="1"
-                                        />
-                                        
-                                        {/* State boundaries - simplified */}
-                                        <g stroke="#94a3b8" strokeWidth="0.5" fill="none">
-                                            {/* California */}
-                                            <path d="M 50 180 L 50 350 L 150 350 L 150 200 Z" />
-                                            {/* Texas */}
-                                            <path d="M 300 250 L 450 250 L 450 350 L 300 350 Z" />
-                                            {/* Florida */}
-                                            <path d="M 650 300 L 750 300 L 750 350 L 650 350 Z" />
-                                            {/* New York */}
-                                            <path d="M 700 150 L 800 150 L 800 200 L 700 200 Z" />
-                                            {/* Other state lines */}
-                                            <line x1="200" y1="150" x2="200" y2="350" />
-                                            <line x1="300" y1="150" x2="300" y2="350" />
-                                            <line x1="400" y1="150" x2="400" y2="350" />
-                                            <line x1="500" y1="150" x2="500" y2="350" />
-                                            <line x1="600" y1="150" x2="600" y2="350" />
-                                            <line x1="700" y1="150" x2="700" y2="350" />
-                                            
-                                            <line x1="50" y1="200" x2="850" y2="200" />
-                                            <line x1="50" y1="250" x2="850" y2="250" />
-                                            <line x1="50" y1="300" x2="850" y2="300" />
-                                        </g>
-                                        
-                                        {/* State labels */}
-                                        <g fill="#64748b" fontSize="12" textAnchor="middle">
-                                            <text x="100" y="265">CA</text>
-                                            <text x="375" y="300">TX</text>
-                                            <text x="700" y="325">FL</text>
-                                            <text x="750" y="175">NY</text>
-                                            <text x="250" y="225">CO</text>
-                                            <text x="550" y="225">WA</text>
-                                        </g>
-                                    </svg>
-                                    
-                                    {/* Store Bubbles */}
-                                    {filteredStores.map((store) => {
-                                        // Convert lat/lng to screen positions (improved mapping)
-                                        // US bounds: lat 24-49, lng -125 to -66
-                                        const x = ((store.longitude + 125) / 59) * 100; // -125 to -66 = 59 degree range
-                                        const y = ((49 - store.latitude) / 25) * 100;   // 49 to 24 = 25 degree range
-                                        
-                                        return (
-                                            <div
-                                                key={store.storeNumber}
-                                                className="absolute transform -translate-x-1/2 -translate-y-1/2 cursor-pointer transition-all duration-200 hover:scale-125 z-10"
-                                                style={{
-                                                    left: `${Math.max(5, Math.min(95, x))}%`,
-                                                    top: `${Math.max(10, Math.min(90, y))}%`,
-                                                }}
-                                                onClick={() => setSelectedStore(store)}
-                                                title={`${store.storeName} - ${store.city}, ${store.state}`}
-                                            >
-                                                <div className="relative">
-                                                    <div className="w-8 h-8 rounded-full border-3 border-white shadow-lg flex items-center justify-center bg-green-500 hover:bg-green-600 transition-colors">
-                                                        <MapPin className="w-4 h-4 text-white" />
-                                                    </div>
-                                                    {/* Store name tooltip on hover */}
-                                                    <div className="absolute top-10 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white px-2 py-1 rounded text-xs whitespace-nowrap opacity-0 hover:opacity-100 transition-opacity pointer-events-none z-20">
-                                                        {store.storeName}
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                            </div>
-                            
-                            {/* Legend */}
-                            <div className="absolute top-4 right-4 bg-white rounded-lg shadow-lg p-4">
-                                <h3 className="font-semibold mb-2 text-sm">Available Stores</h3>
-                                <div className="space-y-1 text-xs">
-                                    <div className="flex items-center gap-2">
-                                        <div className="w-3 h-3 rounded-full bg-green-500"></div>
-                                        <span>Open for Reservation</span>
-                                    </div>
-                                </div>
-                            </div>
                         </div>
                         
                         {/* Store Details Panel */}
@@ -415,8 +498,14 @@
                                     <div className="space-y-3">
                                         <div>
                                             <div className="text-sm font-medium text-gray-700">Status</div>
-                                            <div className="inline-block px-3 py-1 rounded-full text-sm font-medium bg-green-100 text-green-700">
-                                                Open
+                                            <div 
+                                                className="inline-block px-3 py-1 rounded-full text-sm font-medium"
+                                                style={{ 
+                                                    backgroundColor: getStatusBgColor(selectedStore.status),
+                                                    color: getStatusTextColor(selectedStore.status)
+                                                }}
+                                            >
+                                                {selectedStore.status.charAt(0).toUpperCase() + selectedStore.status.slice(1).toLowerCase()}
                                             </div>
                                         </div>
                                         
@@ -432,18 +521,6 @@
                                                 {selectedStore.city}, {selectedStore.state} {selectedStore.zip}
                                             </div>
                                         </div>
-                                        
-                                        <div className="pt-4">
-                                            <a
-                                                href={selectedStore.reserveLink}
-                                                target="_blank"
-                                                rel="noopener noreferrer"
-                                                className="w-full bg-blue-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-blue-700 transition-colors flex items-center justify-center gap-2"
-                                            >
-                                                Reserve Store
-                                                <ExternalLink className="w-4 h-4" />
-                                            </a>
-                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -453,7 +530,7 @@
             );
         };
 
-        ReactDOM.render(<StoreReservationMap />, document.getElementById('root'));
+        ReactDOM.render(<FreedomTHDStoresMap />, document.getElementById('root'));
     </script>
 </body>
 </html>
